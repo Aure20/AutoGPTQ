@@ -168,12 +168,58 @@ def opt_eval(quant_model, base_model, model_swap:int, tokens, dev, seqlen=2048):
 
     quant_model.config.use_cache = use_cache
 
-
-def main():
-    traindataset, testenc = get_wikitext2(128, 0, 2048, pretrained_model_dir)
+@torch.no_grad()
+def prunde_model_and_quantize(model_name, layer): 
     
+    #Create train dataset
+    traindataset, _ = get_wikitext2(128, 0, 2048, pretrained_model_dir)  
+    
+    model = OPTForCausalLM.from_pretrained(model_name).to("cuda:0")
+    inps = []
+    
+    for batch in traindataset:
+        #Load tensors on the GPU
+        batch['input_ids'] = batch['input_ids'].to("cuda:0")
+        batch['attention_mask'] = batch['attention_mask'].to("cuda:0") 
+        #Outputs of the base model across all the layers
+        hidden = model(**batch, output_hidden_states=True)
+        #Get outputs of the layer before we prune
+        inps.append({'input_ids' : hidden.hidden_states[layer-1].half(), 'attention_mask': batch['attention_mask']}) 
+    
+    #Keep only the last decoder layers [-layer:] and stored them in my huggingface
+    #model.model.decoder.layers = nn.ModuleList(list(model.model.decoder.layers)[layer:])
+    
+    #Save partial model to huggingface hub
+    model_name = f"Serione/opt-125m-{layer}"
+    model.push_to_hub(model_name)
+    
+    quantize_config = BaseQuantizeConfig(
+        bits=4,  # quantize model to 4-bit
+        group_size=128,  # it is recommended to set the value to 128
+        desc_act=False,  # desc_act and group size only works on triton
+    )
+
+    # load un-quantized model, the model will always be force loaded into cpu
+    model = AutoGPTQForCausalLM.from_pretrained(model_name, quantize_config)
+
+    # quantize model, the examples should be list of dict whose keys can only be "input_ids" and "attention_mask"
+    # with value under torch.LongTensor type.
+    model.quantize(inps, use_triton=False)
+    
+    # save quantized model using safetensors
+    model.save_quantized(quantized_model_dir+f"-{layer}", use_safetensors=True)
+
+
+    
+def main():
+    layer = 12
+    prunde_model_and_quantize(pretrained_model_dir, layer)
+    
+    
+    traindataset, testenc = get_wikitext2(128, 0, 2048, pretrained_model_dir)  
+    """
     #Check if dir exists, otherwise quantize
-    if not(os.path.exists(quantized_model_dir) and os.path.isdir(quantized_model_dir)):
+    if (os.path.exists(quantized_model_dir) and os.path.isdir(quantized_model_dir)):
     
         quantize_config = BaseQuantizeConfig(
             bits=4,  # quantize model to 4-bit
@@ -187,23 +233,21 @@ def main():
         # quantize model, the examples should be list of dict whose keys can only be "input_ids" and "attention_mask"
         # with value under torch.LongTensor type.
         model.quantize(traindataset, use_triton=False)
-
+        
         # save quantized model
         model.save_quantized(quantized_model_dir)
 
         # save quantized model using safetensors
         model.save_quantized(quantized_model_dir, use_safetensors=True)
-    
+    """
 
     #Load quantized model, currently only support cpu or single gpu
-    quantized_model = AutoGPTQForCausalLM.from_quantized(quantized_model_dir, device="cuda:0", use_triton=False)
+    quantized_model = AutoGPTQForCausalLM.from_quantized(quantized_model_dir+f"-{layer}", device="cuda:0", use_triton=False)
     
     #Load the full model, output hiddel states allows to access intermediate values
     base_model = OPTForCausalLM.from_pretrained(pretrained_model_dir, output_hidden_states=True).to("cuda:0")
     
-    #12 is hardcoded for now
-    for i in trange(12):
-        opt_eval(quantized_model.model, base_model, i, testenc, "cuda:0")
+    opt_eval(quantized_model.model, base_model, layer-1, testenc, "cuda:0")
 
 
 if __name__ == "__main__":
@@ -216,3 +260,9 @@ if __name__ == "__main__":
     )
 
     main()
+    
+
+    
+    
+    
+    
