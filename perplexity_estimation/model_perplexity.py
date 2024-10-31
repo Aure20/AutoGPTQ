@@ -62,7 +62,7 @@ def opt_eval(quant_model, base_model, model_swap:int, tokens, dev, seqlen=2048):
         hidden = base_model(**batched_inputs, output_hidden_states=True)
         
         #hidden = base_model(**testenc, output_hidden_states=True)
-        inps.append(hidden.hidden_states[model_swap])
+        inps.append(hidden.hidden_states[model_swap-1])
     
     #Concatenate the list of inputs to have the same format
     inps = torch.cat(inps, dim = 0) 
@@ -130,7 +130,7 @@ def opt_eval(quant_model, base_model, model_swap:int, tokens, dev, seqlen=2048):
     
     outs = torch.zeros_like(inps)
 
-    for i in range(model_swap+1,len(layers)):
+    for i in range(model_swap-1,len(layers)):
         #print(i) 
         layer = layers[i].to(dev)
 
@@ -247,7 +247,7 @@ def main():
     #Load the full model, output hiddel states allows to access intermediate values
     base_model = OPTForCausalLM.from_pretrained(pretrained_model_dir, output_hidden_states=True).to("cuda:0")
     
-    opt_eval(quantized_model.model, base_model, layer-1, testenc, "cuda:0")
+    opt_eval(quantized_model.model, base_model, layer, testenc, "cuda:0")
 
 
 if __name__ == "__main__":
