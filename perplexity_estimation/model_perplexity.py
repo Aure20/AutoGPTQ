@@ -44,62 +44,35 @@ def get_wikitext2(nsamples, seed, seqlen, model):
 
 
 @torch.no_grad()
-def opt_eval(quant_model, base_model, model_swap:int, tokens, dev, seqlen=2048):
+def opt_eval(quant_model, full_model, testenc, dev, config, seqlen=2048):
     print("Evaluating ...")
 
-    #These are the tokenized inputs
-    testenc = tokens.input_ids
+    testenc = testenc.input_ids
     nsamples = testenc.numel() // seqlen
-    
-    # Pass the tokens to the base_model and 
-    inps = []
-    batched_inputs = {'input_ids': None, 'attention_mask': None}
-    for i in range(nsamples):
-        batched_inputs['input_ids'] = tokens['input_ids'][:, (i * seqlen) : ((i + 1) * seqlen)].to(dev)
-        batched_inputs['attention_mask'] = tokens['attention_mask'][:, (i * seqlen) : ((i + 1) * seqlen)].to(dev)
-        
-        #Outputs of the base model across all the layers
-        hidden = base_model(**batched_inputs, output_hidden_states=True)
-        
-        #hidden = base_model(**testenc, output_hidden_states=True)
-        inps.append(hidden.hidden_states[model_swap-1])
-    
-    #Concatenate the list of inputs to have the same format
-    inps = torch.cat(inps, dim = 0) 
-    inps = inps.half()
-    
-    del hidden, batched_inputs, tokens
-    
-    
+
     use_cache = quant_model.config.use_cache
     quant_model.config.use_cache = False
-    #This is a ModuleList of length 12
     layers = quant_model.model.decoder.layers
-    
-    """
-    #This part deals with the embedding layer
+
     quant_model.model.decoder.embed_tokens = quant_model.model.decoder.embed_tokens.to(dev)
     quant_model.model.decoder.embed_positions = quant_model.model.decoder.embed_positions.to(dev)
     if hasattr(quant_model.model.decoder, "project_out") and quant_model.model.decoder.project_out:
         quant_model.model.decoder.project_out = quant_model.model.decoder.project_out.to(dev)
     if hasattr(quant_model.model.decoder, "project_in") and quant_model.model.decoder.project_in:
         quant_model.model.decoder.project_in = quant_model.model.decoder.project_in.to(dev)
-        
     layers[0] = layers[0].to(dev)
 
-    
-    dtype = next(iter(quant_model.parameters())).dtype 
-    #inps = torch.zeros((nsamples, seqlen, quant_model.config.hidden_size), dtype=dtype, device=dev)
+    dtype = next(iter(quant_model.parameters())).dtype
+    inps = torch.zeros((nsamples, seqlen, quant_model.config.hidden_size), dtype=dtype, device=dev)
     cache = {"i": 0, "attention_mask": None}
-    
-    #This part is used to deal with the firse embedding layer so I don't need it ATM
+
     class Catcher(nn.Module):
         def __init__(self, module):
             super().__init__()
             self.module = module
 
         def forward(self, inp, **kwargs):
-            #inps[cache["i"]] = inp
+            inps[cache["i"]] = inp
             cache["i"] += 1
             cache["attention_mask"] = kwargs["attention_mask"]
             raise ValueError
@@ -109,7 +82,7 @@ def opt_eval(quant_model, base_model, model_swap:int, tokens, dev, seqlen=2048):
         batch = testenc[:, (i * seqlen) : ((i + 1) * seqlen)].to(dev)
         try:
             quant_model(batch)
-        except ValueError: #So it stops at the first layer
+        except ValueError:
             pass
     layers[0] = layers[0].module
 
@@ -121,25 +94,22 @@ def opt_eval(quant_model, base_model, model_swap:int, tokens, dev, seqlen=2048):
     if hasattr(quant_model.model.decoder, "project_in") and quant_model.model.decoder.project_in:
         quant_model.model.decoder.project_in = quant_model.model.decoder.project_in.cpu()
     torch.cuda.empty_cache()
-    
-    attention_mask = cache["attention_mask"]
-    """
-    #Here I only emulate the content of the attention mask (not sure if for other models need a different approach)
-    attention_mask = torch.full((seqlen,seqlen), -65504.0, dtype=torch.half, device=dev)
-    attention_mask = attention_mask.triu(1).unsqueeze(0).unsqueeze(0)
-    
+
     outs = torch.zeros_like(inps)
+    attention_mask = cache["attention_mask"]
 
-    for i in range(model_swap-1,len(layers)):
-        #print(i) 
-        layer = layers[i].to(dev)
-
-        for j in range(nsamples):
-            outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
-        layers[i] = layer.cpu()
-        del layer
+    for i,bool in enumerate(config):
+        if bool: #If true we use the quantized model
+            layer = layers[i].to(dev)
+            for j in range(nsamples):
+                outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
+            layers[i] = layer.cpu()
+            del layer
+        else:
+            layer = full_model[i]
+            for j in range(nsamples): #Might need to move the layer to cuda
+                outs[j] = layer(inps[j].unsqueeze(0), attention_mask=attention_mask)[0]
         torch.cuda.empty_cache()
-        #Swap inputs and outputs for the next layer
         inps, outs = outs, inps
 
     if quant_model.model.decoder.final_layer_norm is not None:
@@ -164,34 +134,17 @@ def opt_eval(quant_model, base_model, model_swap:int, tokens, dev, seqlen=2048):
         neg_log_likelihood = loss.float() * seqlen
         nlls.append(neg_log_likelihood)
     ppl = torch.exp(torch.stack(nlls).sum() / (nsamples * seqlen))
-    print(model_swap,ppl.item())
+    #print(ppl.item())
+    with open("F:/Thesis/AutoGPTQ/perplexity_estimation/output.txt", "a") as file:
+        file.write(f'{ppl.item()}\n')
 
     quant_model.config.use_cache = use_cache
 
 @torch.no_grad()
-def prunde_model_and_quantize(model_name, layer): 
+def prune_model_and_quantize(full_model, model_name, layers): 
     
     #Create train dataset
-    traindataset, _ = get_wikitext2(128, 0, 2048, pretrained_model_dir)  
-    
-    model = OPTForCausalLM.from_pretrained(model_name).to("cuda:0")
-    inps = []
-    
-    for batch in traindataset:
-        #Load tensors on the GPU
-        batch['input_ids'] = batch['input_ids'].to("cuda:0")
-        batch['attention_mask'] = batch['attention_mask'].to("cuda:0") 
-        #Outputs of the base model across all the layers
-        hidden = model(**batch, output_hidden_states=True)
-        #Get outputs of the layer before we prune
-        inps.append({'input_ids' : hidden.hidden_states[layer-1].half(), 'attention_mask': batch['attention_mask']}) 
-    
-    #Keep only the last decoder layers [-layer:] and stored them in my huggingface
-    #model.model.decoder.layers = nn.ModuleList(list(model.model.decoder.layers)[layer:])
-    
-    #Save partial model to huggingface hub
-    model_name = f"Serione/opt-125m-{layer}"
-    model.push_to_hub(model_name)
+    traindataset, testenc = get_wikitext2(128, 0, 2048, pretrained_model_dir)  
     
     quantize_config = BaseQuantizeConfig(
         bits=4,  # quantize model to 4-bit
@@ -204,51 +157,40 @@ def prunde_model_and_quantize(model_name, layer):
 
     # quantize model, the examples should be list of dict whose keys can only be "input_ids" and "attention_mask"
     # with value under torch.LongTensor type.
-    model.quantize(inps, use_triton=False)
+    model.quantize(traindataset, use_triton=False, config=layers, full_model=full_model.model.decoder.layers)
     
-    # save quantized model using safetensors
-    model.save_quantized(quantized_model_dir+f"-{layer}", use_safetensors=True)
-
-
+    #save quantized model using safetensors
+    model.save_quantized(quantized_model_dir+f"-test", use_safetensors=True)
+    
+    del model
+    torch.cuda.empty_cache()
+    return testenc
     
 def main():
-    layer = 12
-    prunde_model_and_quantize(pretrained_model_dir, layer)
+    import itertools
     
+    full_model = OPTForCausalLM.from_pretrained(pretrained_model_dir).to("cuda:0").half()
     
-    traindataset, testenc = get_wikitext2(128, 0, 2048, pretrained_model_dir)  
-    """
-    #Check if dir exists, otherwise quantize
-    if (os.path.exists(quantized_model_dir) and os.path.isdir(quantized_model_dir)):
-    
-        quantize_config = BaseQuantizeConfig(
-            bits=4,  # quantize model to 4-bit
-            group_size=128,  # it is recommended to set the value to 128
-            desc_act=False,  # desc_act and group size only works on triton
-        )
+    #List contains combination of which layers are quantized and which are not
+    layers = list(itertools.product([True, False], repeat=12))[::-1] 
+    for layer in layers:
+        try:
+            with open("F:/Thesis/AutoGPTQ/perplexity_estimation/output.txt", "a") as file:
+                file.write(f'{layer},')
+                
+            testenc = prune_model_and_quantize(full_model,pretrained_model_dir, layer) 
 
-        # load un-quantized model, the model will always be force loaded into cpu
-        model = AutoGPTQForCausalLM.from_pretrained(pretrained_model_dir, quantize_config)
-
-        # quantize model, the examples should be list of dict whose keys can only be "input_ids" and "attention_mask"
-        # with value under torch.LongTensor type.
-        model.quantize(traindataset, use_triton=False)
+            #Load quantized model, currently only support cpu or single gpu
+            quantized_model = AutoGPTQForCausalLM.from_quantized(quantized_model_dir+f"-test", device="cuda:0", use_triton=False)
+            
+            opt_eval(quantized_model.model, full_model.model.decoder.layers, testenc, "cuda:0", layer)
         
-        # save quantized model
-        model.save_quantized(quantized_model_dir)
-
-        # save quantized model using safetensors
-        model.save_quantized(quantized_model_dir, use_safetensors=True)
-    """
-
-    #Load quantized model, currently only support cpu or single gpu
-    quantized_model = AutoGPTQForCausalLM.from_quantized(quantized_model_dir+f"-{layer}", device="cuda:0", use_triton=False)
-    
-    #Load the full model, output hiddel states allows to access intermediate values
-    base_model = OPTForCausalLM.from_pretrained(pretrained_model_dir, output_hidden_states=True).to("cuda:0")
-    
-    opt_eval(quantized_model.model, base_model, layer, testenc, "cuda:0")
-
+        except Exception as e:
+            # Print the error message and continue to the next layer
+            print(f"Error processing layer {layer}: {e}")
+            with open("F:/Thesis/AutoGPTQ/perplexity_estimation/output.txt", "a") as file:
+                file.write(f'{layer},')
+            continue
 
 if __name__ == "__main__":
     import logging
