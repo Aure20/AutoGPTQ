@@ -118,6 +118,14 @@ def opt_eval(quant_model, full_model, testenc, dev, config, seqlen=2048):
         quant_model.model.decoder.project_out = quant_model.model.decoder.project_out.to(dev)
     quant_model.lm_head = quant_model.lm_head.to(dev)
 
+    #Store inps for L2 loss measuring
+    base = torch.load("F:/Thesis/AutoGPTQ/perplexity_estimation/base_out.pt")  
+    
+    #L2 Norm along the dimension of the samples
+    l2_loss = torch.mean(torch.norm(base - inps, dim = (1,2)) ** 2)
+    with open("F:/Thesis/AutoGPTQ/perplexity_estimation/L2.txt", "a") as file:
+        file.write(f'{l2_loss.item()}\n')
+    """
     testenc = testenc.to(dev)
     nlls = []
     for i in range(nsamples):
@@ -134,9 +142,10 @@ def opt_eval(quant_model, full_model, testenc, dev, config, seqlen=2048):
         neg_log_likelihood = loss.float() * seqlen
         nlls.append(neg_log_likelihood)
     ppl = torch.exp(torch.stack(nlls).sum() / (nsamples * seqlen))
-    #print(ppl.item())
+    
     with open("F:/Thesis/AutoGPTQ/perplexity_estimation/output.txt", "a") as file:
         file.write(f'{ppl.item()}\n')
+    """
 
     quant_model.config.use_cache = use_cache
 
@@ -172,10 +181,18 @@ def main():
     full_model = OPTForCausalLM.from_pretrained(pretrained_model_dir).to("cuda:0").half()
     
     #List contains combination of which layers are quantized and which are not
-    layers = list(itertools.product([True, False], repeat=12))[::-1] 
+    #layers = [(False, False, False, False, False, False, False, False, False, False, False, False), (False, False, False, True, False, False, False, False, False, False, False, False), (False, False, False, True, False, False, False, False, True, False, False, False), (True, False, True, True, False, False, False, False, False, False, False, False), (True, False, True, True, False, False, False, False, False, True, False, False), (True, False, True, True, False, False, False, False, True, True, False, False), (True, False, True, True, False, False, False, False, True, True, False, True), (True, False, True, True, True, True, False, False, True, True, False, False), (True, False, True, True, True, True, False, False, True, True, True, False), (True, True, True, True, True, True, False, False, True, True, False, True), (True, True, True, True, True, True, False, False, True, True, True, True), (True, True, True, True, True, True, True, False, True, True, True, True), (True, True, True, True, True, True, True, True, True, True, True, True)]
+
+    
+    
+    layers = set(itertools.product([True, False], repeat=12))
+    """
+    with open("F:/Thesis/AutoGPTQ/perplexity_estimation/output.txt", "a") as file:
+        file.write('\n')
+    """ 
     for layer in layers:
         try:
-            with open("F:/Thesis/AutoGPTQ/perplexity_estimation/output.txt", "a") as file:
+            with open("F:/Thesis/AutoGPTQ/perplexity_estimation/L2.txt", "a") as file:
                 file.write(f'{layer},')
                 
             testenc = prune_model_and_quantize(full_model,pretrained_model_dir, layer) 
@@ -188,9 +205,12 @@ def main():
         except Exception as e:
             # Print the error message and continue to the next layer
             print(f"Error processing layer {layer}: {e}")
+            """
             with open("F:/Thesis/AutoGPTQ/perplexity_estimation/output.txt", "a") as file:
                 file.write(f'{layer},')
+            """
             continue
+            
 
 if __name__ == "__main__":
     import logging
