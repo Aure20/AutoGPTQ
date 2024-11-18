@@ -182,10 +182,22 @@ def main():
     
     #List contains combination of which layers are quantized and which are not
     #layers = [(False, False, False, False, False, False, False, False, False, False, False, False), (False, False, False, True, False, False, False, False, False, False, False, False), (False, False, False, True, False, False, False, False, True, False, False, False), (True, False, True, True, False, False, False, False, False, False, False, False), (True, False, True, True, False, False, False, False, False, True, False, False), (True, False, True, True, False, False, False, False, True, True, False, False), (True, False, True, True, False, False, False, False, True, True, False, True), (True, False, True, True, True, True, False, False, True, True, False, False), (True, False, True, True, True, True, False, False, True, True, True, False), (True, True, True, True, True, True, False, False, True, True, False, True), (True, True, True, True, True, True, False, False, True, True, True, True), (True, True, True, True, True, True, True, False, True, True, True, True), (True, True, True, True, True, True, True, True, True, True, True, True)]
-
-    
-    
     layers = set(itertools.product([True, False], repeat=12))
+    
+    layers = [
+    (False, True, True, False, False, False, False, False, False, False, False, False),
+    (True, True, True, False, False, False, False, False, False, False, False, False),
+    (True, True, True, True, False, False, False, False, False, False, False, False),
+    (True, True, True, True, False, False, False, False, True, False, False, False),
+    (True, True, True, True, False, False, False, False, True, True, False, False),
+    (True, True, True, True, False, False, False, False, True, True, True, False),
+    (True, True, True, True, False, False, True, False, True, True, True, False),
+    (True, True, True, True, False, False, True, False, True, True, True, True),
+    (True, True, True, True, False, True, True, False, True, True, True, True),
+    (True, True, True, True, True, True, True, False, True, True, True, True),
+    (True, True, True, True, True, True, True, True, True, True, True, True)
+    ]
+    
     """
     with open("F:/Thesis/AutoGPTQ/perplexity_estimation/output.txt", "a") as file:
         file.write('\n')

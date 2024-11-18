@@ -1032,3 +1032,14 @@
 (True, False, True, False, False, False, True, True, True, False, False, True),6524.0
 (False, True, True, False, False, False, False, False, True, False, False, True),3386.0
 (False, True, True, True, False, False, True, False, False, False, True, False),4062.0 
+(False, True, True, False, False, False, False, False, False, False, False, False),885.5
+(True, True, True, False, False, False, False, False, False, False, False, False),1548.0
+(True, True, True, True, False, False, False, False, False, False, False, False),2184.0
+(True, True, True, True, False, False, False, False, True, False, False, False),3158.0
+(True, True, True, True, False, False, False, False, True, True, False, False),4200.0
+(True, True, True, True, False, False, False, False, True, True, True, False),5436.0
+(True, True, True, True, False, False, True, False, True, True, True, False),6620.0
+(True, True, True, True, False, False, True, False, True, True, True, True),8028.0
+(True, True, True, True, False, True, True, False, True, True, True, True),9792.0
+(True, True, True, True, True, True, True, False, True, True, True, True),10496.0
+(True, True, True, True, True, True, True, True, True, True, True, True),12048.0
